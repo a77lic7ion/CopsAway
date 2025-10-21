@@ -1,0 +1,7 @@
+{
+  "name": "Smart Route Planner",
+  "description": "Find the best route home, avoiding traffic congestion and reported police activity using Gemini and Google Maps.",
+  "requestFramePermissions": [
+    "geolocation"
+  ]
+}
