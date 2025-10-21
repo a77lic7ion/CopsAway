@@ -24,7 +24,8 @@ import PopUp from './components/popup/PopUp';
 import Sidebar from './components/Sidebar';
 import { APIProvider, useMap, useMapsLibrary } from '@vis.gl/react-google-maps';
 import { Map3D } from './components/map-3d';
-import { useLocationStore, useRouteStore, useSettings } from './lib/state';
+import { AdvancedMarker, InfoWindow, Pin } from '@vis.gl/react-google-maps';
+import { useLocationStore, useRouteStore, useSettings, useMapStore } from './lib/state';
 import { GoogleGenAI } from '@google/genai';
 import { INCIDENT_SEARCH_PROMPT } from './lib/constants';
 
@@ -57,24 +58,30 @@ function AppComponent() {
   const { model } = useSettings();
   const { setRouteInfo, clearRoute } = useRouteStore();
   const { origin, setOrigin, setLocationError } = useLocationStore();
+  const { markers, setMarkers } = useMapStore();
   const [showPopUp, setShowPopUp] = useState(true);
+  const [selectedMarker, setSelectedMarker] = useState<string | null>(null);
   
   const coreLibrary = useMapsLibrary('core');
   const routesLibrary = useMapsLibrary('routes');
+  const geocodingLibrary = useMapsLibrary('geocoding');
+  const markerLibrary = useMapsLibrary('marker');
 
   const [directionsService, setDirectionsService] = useState<google.maps.DirectionsService | null>(null);
   const [directionsRenderer, setDirectionsRenderer] = useState<google.maps.DirectionsRenderer | null>(null);
   const [trafficLayer, setTrafficLayer] = useState<google.maps.TrafficLayer | null>(null);
+  const [geocoder, setGeocoder] = useState<google.maps.Geocoder | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   // Effect to initialize map services once the libraries are loaded.
   useEffect(() => {
-    if (!map || !routesLibrary) return;
+    if (!map || !routesLibrary || !geocodingLibrary || !markerLibrary) return;
     
     setDirectionsService(new routesLibrary.DirectionsService());
     setDirectionsRenderer(new routesLibrary.DirectionsRenderer({ map }));
     setTrafficLayer(new google.maps.TrafficLayer());
-  }, [map, routesLibrary]);
+    setGeocoder(new geocodingLibrary.Geocoder());
+  }, [map, routesLibrary, geocodingLibrary, markerLibrary]);
   
   // Effect to get the user's current location on startup.
   useEffect(() => {
@@ -99,7 +106,7 @@ function AppComponent() {
       setError("Cannot find route without a starting location. Please enable location services.");
       return;
     }
-    if (!destination.trim() || !directionsService || !directionsRenderer || !trafficLayer || !map || !routesLibrary) {
+    if (!destination.trim() || !directionsService || !directionsRenderer || !trafficLayer || !map || !routesLibrary || !geocoder) {
       setError("Missing required information to find a route.");
       return;
     }
@@ -108,7 +115,7 @@ function AppComponent() {
     setRouteInfo({ loading: true });
     setError(null);
     
-    const request: google.maps.DirectionsRequest = {
+    let request: google.maps.DirectionsRequest = {
       origin: origin,
       destination: destination,
       travelMode: routesLibrary.TravelMode.DRIVING,
@@ -120,11 +127,6 @@ function AppComponent() {
     
     try {
       const result = await directionsService.route(request);
-      directionsRenderer.setDirections(result);
-      trafficLayer.setMap(map);
-      map.fitBounds(result.routes[0].bounds);
-
-      setRouteInfo({ directions: result });
 
       // Now, call Gemini to find incidents
       const routeSummary = result.routes[0].summary || `from my current location to ${destination}`;
@@ -139,8 +141,73 @@ function AppComponent() {
           systemInstruction: INCIDENT_SEARCH_PROMPT,
         },
       });
-      
-      setRouteInfo({ incidents: genAIResponse.text });
+
+      let incidents: {description: string, location: string}[] = [];
+      const incidentsText = genAIResponse.text;
+
+      if (incidentsText) {
+        try {
+          const cleanedIncidentsText = incidentsText.replace(/```json\n?|\n?```/g, '');
+          incidents = JSON.parse(cleanedIncidentsText);
+        } catch (e) {
+          console.error('Error parsing incidents from Gemini:', e);
+          // Fallback to showing raw text if parsing fails
+          setRouteInfo({ incidents: incidentsText });
+        }
+      }
+
+      if (incidents && incidents.length > 0) {
+        const geocodedIncidents = await Promise.all(
+          incidents.map(async (incident) => {
+            try {
+              const geocodeResult = await geocoder.geocode({ address: incident.location });
+              if (geocodeResult.results[0]) {
+                return {
+                  ...incident,
+                  geocodedLocation: geocodeResult.results[0].geometry.location,
+                };
+              }
+            } catch (e) {
+              console.error('Geocoding error:', e);
+            }
+            return null;
+          })
+        );
+
+        const validIncidents = geocodedIncidents.filter(Boolean);
+
+        if (validIncidents.length > 0) {
+          request = {
+            ...request,
+            drivingOptions: {
+              ...request.drivingOptions,
+              // @ts-ignore - avoid property is not in the type definition
+              avoid: validIncidents.map(incident => incident.geocodedLocation),
+            },
+          };
+        }
+
+        const resultWithAvoidance = await directionsService.route(request);
+        directionsRenderer.setDirections(resultWithAvoidance);
+        trafficLayer.setMap(map);
+        map.fitBounds(resultWithAvoidance.routes[0].bounds);
+
+        setRouteInfo({ directions: resultWithAvoidance, incidents: incidentsText });
+
+        const markers = validIncidents.map(incident => ({
+          position: { lat: incident.geocodedLocation.lat(), lng: incident.geocodedLocation.lng(), altitude: 100 },
+          label: incident.description,
+          showLabel: true,
+        }));
+
+        setMarkers(markers);
+      } else {
+        // No incidents, show original route
+        directionsRenderer.setDirections(result);
+        trafficLayer.setMap(map);
+        map.fitBounds(result.routes[0].bounds);
+        setRouteInfo({ directions: result, incidents: incidentsText });
+      }
 
     } catch (e: any) {
       console.error('Error finding route:', e);
@@ -154,7 +221,7 @@ function AppComponent() {
       setRouteInfo({ loading: false });
     }
 
-  }, [origin, directionsService, directionsRenderer, trafficLayer, map, model, setRouteInfo, clearRoute, routesLibrary, setError]);
+  }, [origin, directionsService, directionsRenderer, trafficLayer, map, model, setRouteInfo, clearRoute, routesLibrary, setError, geocoder, setMarkers]);
 
   return (
     <>
@@ -163,7 +230,29 @@ function AppComponent() {
       <div className="main-container">
         <Sidebar onFindRoute={handleFindRoute} />
         <div className="map-panel">
-          <Map3D {...INITIAL_VIEW_PROPS}></Map3D>
+          <Map3D {...INITIAL_VIEW_PROPS}>
+            {markers.map((marker, index) => (
+              <AdvancedMarker
+                key={index}
+                position={marker.position}
+                onClick={() => setSelectedMarker(marker.label)}
+              >
+                <Pin
+                  background={'#FBBC04'}
+                  borderColor={'#1e8e3e'}
+                  glyphColor={'#1e8e3e'}
+                />
+              </AdvancedMarker>
+            ))}
+            {selectedMarker && (
+              <InfoWindow
+                position={markers.find(marker => marker.label === selectedMarker)?.position}
+                onCloseClick={() => setSelectedMarker(null)}
+              >
+                <p>{selectedMarker}</p>
+              </InfoWindow>
+            )}
+          </Map3D>
         </div>
       </div>
     </>
