@@ -177,22 +177,35 @@ function AppComponent() {
         const validIncidents = geocodedIncidents.filter(Boolean);
 
         if (validIncidents.length > 0) {
-          request = {
-            ...request,
-            drivingOptions: {
-              ...request.drivingOptions,
-              // @ts-ignore - avoid property is not in the type definition
-              avoid: validIncidents.map(incident => incident.geocodedLocation),
-            },
-          };
+          request.provideRouteAlternatives = true;
+          const resultWithAlternatives = await directionsService.route(request);
+
+          const routes = resultWithAlternatives.routes;
+          const incidentLocations = validIncidents.map(incident => incident.geocodedLocation);
+
+          const bestRoute = routes.find(route => {
+            return !route.overview_path.some(pathPoint => {
+              return incidentLocations.some(incidentLocation => {
+                return google.maps.geometry.spherical.computeDistanceBetween(pathPoint, incidentLocation) < 1000; // 1km radius
+              });
+            });
+          });
+
+          const finalResult = bestRoute ? { ...resultWithAlternatives, routes: [bestRoute] } : result;
+
+          directionsRenderer.setDirections(finalResult);
+          trafficLayer.setMap(map);
+          map.fitBounds(finalResult.routes[0].bounds);
+
+          setRouteInfo({ directions: finalResult, incidents: incidentsText });
+
+        } else {
+          // No incidents, show original route
+          directionsRenderer.setDirections(result);
+          trafficLayer.setMap(map);
+          map.fitBounds(result.routes[0].bounds);
+          setRouteInfo({ directions: result, incidents: incidentsText });
         }
-
-        const resultWithAvoidance = await directionsService.route(request);
-        directionsRenderer.setDirections(resultWithAvoidance);
-        trafficLayer.setMap(map);
-        map.fitBounds(resultWithAvoidance.routes[0].bounds);
-
-        setRouteInfo({ directions: resultWithAvoidance, incidents: incidentsText });
 
         const markers = validIncidents.map(incident => ({
           position: { lat: incident.geocodedLocation.lat(), lng: incident.geocodedLocation.lng(), altitude: 100 },
@@ -223,12 +236,29 @@ function AppComponent() {
 
   }, [origin, directionsService, directionsRenderer, trafficLayer, map, model, setRouteInfo, clearRoute, routesLibrary, setError, geocoder, setMarkers]);
 
+  const handleFindLocation = useCallback(() => {
+    if (!coreLibrary) return;
+
+    if (!navigator.geolocation) {
+      setLocationError('Geolocation is not supported.');
+      return;
+    }
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        setOrigin(new coreLibrary.LatLng(position.coords.latitude, position.coords.longitude));
+      },
+      () => {
+        setLocationError('Location permission denied.');
+      }
+    );
+  }, [coreLibrary, setOrigin, setLocationError]);
+
   return (
     <>
       <ErrorScreen customError={error} clearError={() => setError(null)} />
       {showPopUp && <PopUp onClose={() => setShowPopUp(false)} />}
       <div className="main-container">
-        <Sidebar onFindRoute={handleFindRoute} />
+        <Sidebar onFindRoute={handleFindRoute} onFindLocation={handleFindLocation} />
         <div className="map-panel">
           <Map3D {...INITIAL_VIEW_PROPS}>
             {markers.map((marker, index) => (

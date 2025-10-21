@@ -6,11 +6,11 @@ import React from 'react';
 import ControlTray, { ControlTrayProps } from './ControlTray';
 import StreamingConsole from './streaming-console/StreamingConsole';
 
-export default function Sidebar({ onFindRoute }: ControlTrayProps) {
+export default function Sidebar({ onFindRoute, onFindLocation }: ControlTrayProps) {
   return (
     <aside className={'sidebar open'}>
       <div className="sidebar-content-planner">
-        <ControlTray onFindRoute={onFindRoute} />
+        <ControlTray onFindRoute={onFindRoute} onFindLocation={onFindLocation} />
         <div className="results-divider"></div>
         <StreamingConsole />
       </div>

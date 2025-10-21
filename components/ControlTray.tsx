@@ -23,9 +23,10 @@ import { useLocationStore, useRouteStore } from '@/lib/state';
 
 export type ControlTrayProps = {
   onFindRoute: (destination: string) => void;
+  onFindLocation: () => void;
 };
 
-function ControlTray({ onFindRoute }: ControlTrayProps) {
+function ControlTray({ onFindRoute, onFindLocation }: ControlTrayProps) {
   const [destination, setDestination] = useState('');
   const { loading } = useRouteStore();
   const { origin, locationError } = useLocationStore();
@@ -59,6 +60,14 @@ function ControlTray({ onFindRoute }: ControlTrayProps) {
             disabled
             readOnly
           />
+          <button
+            type="button"
+            className="location-button"
+            onClick={onFindLocation}
+            aria-label="Find my location"
+          >
+            <span className="icon">gps_fixed</span>
+          </button>
         </div>
         <div className="input-group">
           <span className="icon">home</span>
